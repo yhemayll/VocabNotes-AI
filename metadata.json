@@ -1,0 +1,5 @@
+{
+  "name": "VocabNotes AI",
+  "description": "A minimalist, AI-powered note-taking application for language learners. Automatically translates phrases as you type and allows deep customization of text style and formatting.",
+  "requestFramePermissions": []
+}
