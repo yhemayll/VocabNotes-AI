@@ -56,17 +56,28 @@ const App: React.FC = () => {
       setCurrentInput('');
 
       try {
-        const translated = await translationService.translate(
-          text, 
-          settings.targetLang, 
-          settings.sourceLang
-        );
-        
-        setNotes(prev => prev.map(note => 
-          note.id === newLineId 
-            ? { ...note, translation: translated, isTranslating: false } 
-            : note
-        ));
+        const res = await fetch("/api/translate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    text,
+    sourceLang: settings.sourceLang,
+    targetLang: settings.targetLang,
+  }),
+});
+
+if (!res.ok) {
+  throw new Error(`Proxy error: ${res.status}`);
+}
+
+const data = await res.json();
+const translated = data.translation || 'No translation returned';
+
+setNotes(prev => prev.map(note =>
+  note.id === newLineId
+    ? { ...note, translation: translated, isTranslating: false }
+    : note
+));
       } catch (err) {
         setNotes(prev => prev.map(note => 
           note.id === newLineId 
