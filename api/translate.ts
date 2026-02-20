@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from "@google/genai";
 
 export const config = {
-  runtime: "nodejs18.x",
+  runtime: "nodejs",  // Uses the latest supported Node.js (20.x or 22.x)
 };
 
 // Handle CORS preflight (OPTIONS) requests from Safari/iOS
