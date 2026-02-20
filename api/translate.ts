@@ -1,11 +1,11 @@
 // api/translate.ts
-import { GoogleGenerativeAI } from "@google/genai";
+import { GenerativeAI } from "@google/genai";
 
 export const config = {
-  runtime: "nodejs", // or "edge" if you want even faster cold starts
+  runtime: "nodejs", // or "edge" — "nodejs" is safer for this SDK right now
 };
 
-// CORS headers – needed for Safari/iOS
+// CORS headers (required for Safari/iOS and cross-origin fetches)
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -21,20 +21,21 @@ export async function OPTIONS() {
 }
 
 export default async function handler(req: Request) {
-  // Always add CORS
   const headers = { ...CORS_HEADERS };
 
+  // Handle preflight (OPTIONS) requests
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers });
   }
 
+  // Only allow POST
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405, headers });
   }
 
   try {
     const body = await req.json();
-    const { text, sourceLang, targetLang } = body;
+    const { text, sourceLang = "auto", targetLang } = body;
 
     if (!text || !targetLang) {
       return new Response(
@@ -45,32 +46,37 @@ export default async function handler(req: Request) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
+      console.error("GEMINI_API_KEY is missing in environment variables");
       return new Response(
-        JSON.stringify({ error: "API key not configured on server" }),
+        JSON.stringify({ error: "Server configuration error: API key missing" }),
         { status: 500, headers: { ...headers, "Content-Type": "application/json" } }
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    console.log(`Translating "${text}" from ${sourceLang} to ${targetLang}`);
+
+    const genAI = new GenerativeAI(apiKey);
+
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash-latest", // fastest available in 2026
+      model: "gemini-1.5-flash-latest", // fastest & most reliable in 2026
       generationConfig: {
-        temperature: 0.0,           // deterministic, faster, no creativity
-        maxOutputTokens: 256,       // reasonable limit for translation
+        temperature: 0.0,           // no randomness — fast & deterministic
+        maxOutputTokens: 256,
         topP: 0.95,
       },
     });
 
-    const prompt = `Translate the following text from ${sourceLang || "auto"} to ${targetLang}. Return only the translation, nothing else:\n\n"${text}"`;
+    // Stronger prompt to prevent empty / refused responses
+    const prompt = `You are a precise translator. Translate ONLY the following text from ${sourceLang} to ${targetLang}. Return ONLY the translated text — nothing else, no explanations, no quotes, no comments:\n\n"${text}"`;
 
     const stream = await model.generateContentStream(prompt);
 
-    // Stream the response back to the client (progressive output)
+    // Create streaming response (text appears progressively in the app)
     const readable = new ReadableStream({
       async start(controller) {
         try {
           for await (const chunk of stream.stream) {
-            const textChunk = chunk.text();
+            const textChunk = chunk.text?.() || "";
             if (textChunk) {
               controller.enqueue(
                 new TextEncoder().encode(`data: ${JSON.stringify({ chunk: textChunk })}\n\n`)
@@ -80,6 +86,7 @@ export default async function handler(req: Request) {
           controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
           controller.close();
         } catch (err) {
+          console.error("Stream error:", err);
           controller.error(err);
         }
       },
@@ -95,7 +102,7 @@ export default async function handler(req: Request) {
       },
     });
   } catch (error: any) {
-    console.error("Gemini proxy error:", error);
+    console.error("Gemini proxy error:", error.message, error.stack);
     return new Response(
       JSON.stringify({ error: "Translation failed: " + (error.message || "Unknown error") }),
       { status: 500, headers: { ...headers, "Content-Type": "application/json" } }
