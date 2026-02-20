@@ -1,24 +1,20 @@
-import { GoogleGenerativeAI } from "@google/genai";
-
 export const config = {
-  runtime: "nodejs",  // Uses the latest supported Node.js (20.x or 22.x)
+  runtime: "nodejs", // or "edge" if you prefer
 };
 
-// Handle CORS preflight (OPTIONS) requests from Safari/iOS
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": "*",  // Or replace * with your exact domain later for security
+      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Max-Age": "86400",  // Cache preflight for 24h
+      "Access-Control-Max-Age": "86400",
     },
   });
 }
 
 export default async function handler(req: Request) {
-  // Add CORS to all responses
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -43,30 +39,35 @@ export default async function handler(req: Request) {
       });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: "API key not configured" }), {
-        status: 500,
-        headers: { ...headers, "Content-Type": "application/json" },
-      });
+    // Public LibreTranslate instance (fast & free)
+    const LIBRE_URL = "https://libretranslate.com/translate"; // or "https://translate.argosopentech.com/translate"
+
+    const response = await fetch(LIBRE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        q: text,
+        source: sourceLang !== "auto" ? sourceLang.toLowerCase().slice(0, 2) : "auto",
+        target: targetLang.toLowerCase().slice(0, 2),
+        format: "text",
+      }),
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      throw new Error(errData.error || "LibreTranslate error");
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const data = await response.json();
+    const translated = data.translatedText || text;
 
-    const prompt = `Translate the following text from ${sourceLang || "auto"} to ${targetLang}: "${text}"`;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const translation = response.text();
-
-    return new Response(JSON.stringify({ translation }), {
+    return new Response(JSON.stringify({ translation: translated }), {
       status: 200,
       headers: { ...headers, "Content-Type": "application/json" },
     });
   } catch (error: any) {
-    console.error(error);
-    return new Response(JSON.stringify({ error: "Translation failed: " + (error.message || "Unknown error") }), {
+    console.error("LibreTranslate error:", error);
+    return new Response(JSON.stringify({ error: "Translation failed: " + (error.message || "Unknown") }), {
       status: 500,
       headers: { ...headers, "Content-Type": "application/json" },
     });
