@@ -1,5 +1,5 @@
 // api/translate.ts
-import { GenerativeAI } from "@google/genai";
+import { GoogleGenerativeAI as GenerativeAI } from "@google/genai";
 
 export const config = {
   runtime: "nodejs", // or "edge" — "nodejs" is safer for this SDK right now
