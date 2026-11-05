@@ -64,6 +64,8 @@ const App: React.FC = () => {
               sourceLang: settings.sourceLang,
               targetLang: settings.targetLang,
             }),
+            // Never leave a line stuck on "Translating..."
+            signal: AbortSignal.timeout(45000),
           });
 
           if (!res.ok) {
