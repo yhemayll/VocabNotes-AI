@@ -5,6 +5,75 @@ import { jsPDF } from 'jspdf';
 
 const STORAGE_KEY = 'lingonotes-history';
 
+declare global {
+  interface Window {
+    puter?: any;
+  }
+}
+
+const buildPrompt = (text: string, sourceLang: string, targetLang: string) => {
+  const from = !sourceLang || sourceLang === 'auto' ? '' : ` from ${sourceLang}`;
+  return `Translate${from} to ${targetLang}. Output only the translation, nothing else:\n\n${text}`;
+};
+
+const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Timed out')), ms)),
+  ]);
+
+// Puter.js — loaded via <script src="https://js.puter.com/v2/"> in index.html
+async function translateWithPuter(
+  text: string,
+  sourceLang: string,
+  targetLang: string,
+  onPartial: (partial: string) => void
+): Promise<string> {
+  const puter = window.puter;
+  if (!puter?.ai?.chat) throw new Error('Puter.js not loaded');
+
+  const run = async () => {
+    const response = await puter.ai.chat(buildPrompt(text, sourceLang, targetLang), {
+      model: 'gpt-5.4-nano',
+      stream: true,
+    });
+    let acc = '';
+    for await (const part of response) {
+      if (part?.text) {
+        acc += part.text;
+        onPartial(acc);
+      }
+    }
+    return acc.trim();
+  };
+  // Generous timeout: the first use may show Puter's sign-in popup.
+  return withTimeout(run(), 90000);
+}
+
+// Backup: our own Vercel function (Gemini)
+async function translateWithServer(text: string, sourceLang: string, targetLang: string): Promise<string> {
+  const res = await fetch('/api/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, sourceLang, targetLang }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
+  const body = await res.text();
+  let acc = '';
+  for (const line of body.split('\n')) {
+    if (!line.startsWith('data: ')) continue;
+    const data = line.slice(6).trim();
+    if (data === '[DONE]') break;
+    try {
+      acc += JSON.parse(data).chunk ?? '';
+    } catch {
+      /* ignore */
+    }
+  }
+  return acc.trim();
+}
+
 const App: React.FC = () => {
   const [settings, setSettings] = useState<EditorSettings>({
     fontFamily: FontFamily.SANS,
@@ -55,73 +124,30 @@ const App: React.FC = () => {
         setNotes((prev) => [...prev, newNote]);
         setCurrentInput('');
 
+        const showPartial = (partial: string) =>
+          setNotes((prev) =>
+            prev.map((note) =>
+              note.id === newLineId ? { ...note, translation: partial, isTranslating: true } : note
+            )
+          );
+
         try {
-          const res = await fetch('/api/translate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text,
-              sourceLang: settings.sourceLang,
-              targetLang: settings.targetLang,
-            }),
-            // Never leave a line stuck on "Translating..."
-            signal: AbortSignal.timeout(45000),
-          });
-
-          if (!res.ok) {
-            throw new Error(`Proxy error: ${res.status}`);
+          let result = '';
+          try {
+            // Primary: Puter.js (free, no API key; streams text as it arrives)
+            result = await translateWithPuter(text, settings.sourceLang, settings.targetLang, showPartial);
+          } catch (puterErr) {
+            console.warn('Puter translation failed, falling back to server:', puterErr);
+          }
+          if (!result) {
+            // Backup: our own /api/translate (Gemini)
+            result = await translateWithServer(text, settings.sourceLang, settings.targetLang);
           }
 
-          if (!res.body) throw new Error('No response body');
-
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-
-          let accumulated = '';
-
-          // eslint-disable-next-line no-constant-condition
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const dataStr = line.slice(6).trim();
-                if (dataStr === '[DONE]') break;
-
-                try {
-                  const parsed = JSON.parse(dataStr);
-                  if (parsed.chunk) {
-                    accumulated += parsed.chunk;
-
-                    // Live update
-                    setNotes((prev) =>
-                      prev.map((note) =>
-                        note.id === newLineId
-                          ? { ...note, translation: accumulated, isTranslating: true }
-                          : note
-                      )
-                    );
-                  }
-                } catch {
-                  // Silent ignore invalid JSON chunks
-                }
-              }
-            }
-          }
-
-          // Final update when stream ends
           setNotes((prev) =>
             prev.map((note) =>
               note.id === newLineId
-                ? {
-                    ...note,
-                    translation: accumulated || 'No translation received',
-                    isTranslating: false,
-                  }
+                ? { ...note, translation: result || 'No translation received', isTranslating: false }
                 : note
             )
           );
