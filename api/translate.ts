@@ -38,11 +38,31 @@ export async function POST(req: Request) {
       `You are a precise translator. Translate the text below from ${from} to ${targetLang}. ` +
       `Return ONLY the translation — no explanations, no quotes.\n\n${text}`;
 
-    const stream = await ai.models.generateContentStream({
-      model: "gemini-flash-latest",
-      contents: prompt,
-      config: { temperature: 0, maxOutputTokens: 512 },
-    });
+    // Try several models: if one is overloaded (503), rate-limited (429) or
+    // unavailable (404), fall through to the next instead of failing.
+    const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+    let stream: AsyncGenerator<{ text?: string }> | null = null;
+    let lastErr: any = null;
+    for (const model of MODELS) {
+      for (let attempt = 0; attempt < 2 && !stream; attempt++) {
+        try {
+          stream = await ai.models.generateContentStream({
+            model,
+            contents: prompt,
+            config: { temperature: 0, maxOutputTokens: 512 },
+          });
+        } catch (err: any) {
+          lastErr = err;
+          const status = err?.status ?? err?.code;
+          console.warn(`Model ${model} failed (attempt ${attempt + 1}):`, status, err?.message?.slice(0, 200));
+          if (![429, 500, 503, 404].includes(Number(status))) throw err;
+          if (attempt === 0 && status !== 404) await new Promise((r) => setTimeout(r, 600));
+          if (status === 404) break;
+        }
+      }
+      if (stream) break;
+    }
+    if (!stream) throw lastErr ?? new Error("All models unavailable");
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
